@@ -3,12 +3,15 @@
 //     / \  _   _| |_ ___ | |__   ___ | |_  __   _| || |   |  _ \ _____      _____ _ __  | __ )  ___   __ _ _ __ __| |
 //    / _ \| | | | __/ _ \| '_ \ / _ \| __| \ \ / / || |_  | |_) / _ \ \ /\ / / _ \ '__| |  _ \ / _ \ / _` | '__/ _` |
 //   / ___ \ |_| | || (_) | |_) | (_) | |_   \ V /|__   _| |  __/ (_) \ V  V /  __/ |    | |_) | (_) | (_| | | | (_| |
-//  /_/   \_\__,_|\__\___/|_.__/ \___/ \__|   \_/    |_|   |_|   \___/ \_/\_/ \___|_|    |____/ \___/ \__,_|_|  \__,_| v1.00
+//  /_/   \_\__,_|\__\___/|_.__/ \___/ \__|   \_/    |_|   |_|   \___/ \_/\_/ \___|_|    |____/ \___/ \__,_|_|  \__,_| v1.10
 //
 //  Controls the 15-output Power Board for the Autobot v4.
-///
+//
+//  v1.00 (15.01.2020) First release. Allows switching outputs on, off, pwm, and blinking, all functions support 
+//                     auto-shutoff timers. Supports 4 byte commands over I2C.
+//	v1.10 (15.01.2020) PWM Sweep (up+down, up, down) functionality implemented.
+//
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
 
 #include <Wire.h>
 
@@ -25,7 +28,6 @@ bool gNewData  = false; //Indicates that new data has arrived over I2C and must 
 bool gQBlinkOn = false; //Is one global blink line, that changes state every 250ms
 bool gHBlinkOn = false; //Is the other global blink line, that changes state every 500ms
 byte gBlinkNum = 0;     //Counts blink cycles, to divide gQBlinks by 2 to get gHBlinks
-
 
 
 
@@ -102,10 +104,13 @@ void requestEvent() {
           //The time is up, switch the corresponding output off and reset the off-time value
           digitalWrite(i, LOW);
           gTimeArray[i] = 0;
+          // Cancel any waiting or blinking for this output as well, setting the COMMAND field to 0 for that output
+          gDataArray[i][0] = 0;
         }
       }
     }
   }
+
 
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -132,18 +137,55 @@ void requestEvent() {
 
 
 
-  ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-//   __             _   ___ _ _      _   _           ___ _        _
-//   \ \    ___ ___| |_| _ ) (_)_ _ | |_(_)_ _  __ _/ __| |_ __ _| |_ ___ ___
-//    \ \  (_-</ -_)  _| _ \ | | ' \| / / | ' \/ _` \__ \  _/ _` |  _/ -_|_-<
-//     \_\ /__/\___|\__|___/_|_|_||_|_\_\_|_||_\__, |___/\__\__,_|\__\___/__/
-//                                             |___/
-//         Sets the different blinking lines states to on or off
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+//   __        _           _   ___ _ _      _      _           _ ___
+//   \ \    __| |_  ___ __| |_| _ ) (_)_ _ | |__  /_\  _ _  __| / __|_ __ _____ ___ _ __
+//    \ \  / _| ' \/ -_) _| / / _ \ | | ' \| / / / _ \| ' \/ _` \__ \ V  V / -_) -_) '_ \
+//     \_\ \__|_||_\___\__|_\_\___/_|_|_||_|_\_\/_/ \_\_||_\__,_|___/\_/\_/\___\___| .__/
+//                                                                                 |_|
+//         Checks if blinking or sweeping is to be done and advances it a step, if so.
 //
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-  void setBlinkingStates () {
+  void checkBlinkAndSweep () {
+		for (byte i = 0; i <= 17; i++) {
+			if (gDataArray[i][0] != 0) {
+        // SIMPLE BLINKING    //////////////////////////////////////////////////////////////////////////////////////////////
+				if (gDataArray[i][0] == 3) {	// Make this output blink
+					if (gDataArray[i][1] == 1) {digitalWrite(i,gQBlinkOn);} else {digitalWrite(i,gHBlinkOn);}	// Fast or slow blink
+				}
+
+        // PWM SWEEP UP & DOWN    //////////////////////////////////////////////////////////////////////////////////////////
+				if (gDataArray[i][0] == 5) {	// Make this output sweep up & down with PWM
+					/* code */
+				}
+
+        // PWM SWEEP UP     ////////////////////////////////////////////////////////////////////////////////////////////////
+				if (gDataArray[i][0] == 6) {	// Make this output sweep up with PWM
+					/* code */
+				}
+
+        // PWM SWEEP DOWN     //////////////////////////////////////////////////////////////////////////////////////////////
+				if (gDataArray[i][0] == 7) {	// Make this output sweep down with PWM
+					/* code */
+				}
+
+        // LIGHT SWEEP UPPER     ///////////////////////////////////////////////////////////////////////////////////////////
+				if (gDataArray[i][0] == 8) {	// Make the upper outputs (2, 4, 7, 8, 12) light-sweep back and forth
+					/* code */
+				}
+
+        // LIGHT SWEEP LOWER     ///////////////////////////////////////////////////////////////////////////////////////////
+				if (gDataArray[i][0] == 9) {	// Make the lower outputs (A0, A1, A2, A3) light-sweep back and forth
+					/* code */
+				}
+//				gDataArray[rcvOutput][0] = rcvCommand;	// Store the COMMAND (3 = blink)
+//				gDataArray[rcvOutput][1] = rcvValue1;		// Store the SPEED (1 or 2, 250ms or 500ms)
+//				gDataArray[rcvOutput][2] = rcvValue2;		// Store the ON TIME (optional, in seconds)
+			}
+		}
 
   }
+
 
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -254,110 +296,134 @@ void setup() {
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 void loop() {
+	// Make things easier to read assigning friendlier variable names
+	byte rcvCommand;
+	byte rcvOutput;
+	byte rcvValue1;
+	byte rcvValue2;
+
+	rcvCommand = gReceivedData[0];	// The command to be executed
+	rcvOutput  = gReceivedData[1];	// The output that command is intended for
+	rcvValue1  = gReceivedData[2];	// The first parameter, can be SPEED, TIME or PWM VALUE
+	rcvValue2  = gReceivedData[3];	// The second parameter, can be TIME or # OF CYCLES
+
+
   /************************************************************************************************************************/
   /* If some command has arrived from the master, do what has to be done                                                  */
   /************************************************************************************************************************/
   if (gNewData == true) {
     /* ------------------------------------------------------------------------------------------------------------------ */
-    /* FIND OUT WHICH COMMAND HAS TO BE PROCESSED (which is in gReceivedData[0])                                               */
+    /* FIND OUT WHICH COMMAND HAS TO BE PROCESSED (which is in gReceivedData[0])                                          */
     /* ------------------------------------------------------------------------------------------------------------------ */
-    switch (gReceivedData[0]) {
+    switch (rcvCommand) {
       case 1:
         /* -------------------------------------------------------------------------------------------------------------- */
         /* SWITCH A CHANNEL ON                                                                                            */
         /* -------------------------------------------------------------------------------------------------------------- */
-        /* "Channel on" gets 2 parameters:                                                                                */
-        /*    • gReceivedData[1] is the "output #" which can be: 2-17 (14-17 are analog pins                                   */
-        /*    • gReceivedData[2] is the "on time" (in seconds) which is optional. This is the time the output will remain on,  */
-        /*      in seconds. Then it will switch off automatically. If "on time" is 0, it's ignored.                       */
+        /* "Channel on" uses 1 parameter:                                                                                 */
+        /*    • rcvValue2 is the "on time" (in seconds) which is optional. This is the time the output will remain 				*/
+				/*      on, in seconds. Then it will switch off automatically. If "on time" is 0, it's ignored.                   */
         /* -------------------------------------------------------------------------------------------------------------- */
 
         // Switch the corresponding channel on
-        digitalWrite(gReceivedData[1], HIGH);
+        digitalWrite(rcvOutput, HIGH);
 
-        //Check if there is timing to be done, if so, calculate and set the time to switch the output off
-        if (gReceivedData[2] > 0) {gTimeArray[gReceivedData[1]] = millis() + (gReceivedData[2] * 1000);}
+        //Check if there is timing to be done, if so, calculate and set the time in gTimeArray to switch the output off
+        if (rcvValue2 > 0) {gTimeArray[rcvOutput] = millis() + (rcvValue2 * 1000);}
       break;
 
       case 2:
         /* -------------------------------------------------------------------------------------------------------------- */
         /* SWITCH A CHANNEL OFF                                                                                           */
         /* -------------------------------------------------------------------------------------------------------------- */
-        /* "Channel off" gets 1 parameter:                                                                                */
-        /*    • gReceivedData[1] is the "output #" which can be: 2-17 (14-17 are analog pins                                   */
-        /*                                                                                                                */
-        /* "Channel off" also switches off any ongoing timing or blinking functions, cutting them short if necessary      */
+        /* "Channel off" uses no parameters and also switches off any ongoing timing or blinking functions, cutting				*/
+				/* them short if necessary.     																																									*/
         /* -------------------------------------------------------------------------------------------------------------- */
 
         // Switch the corresponding channel off
-        digitalWrite(gReceivedData[1], LOW);
+        digitalWrite(rcvOutput, LOW);
 
-        //    _   _   _
-        //   | | | | | |
-        //   |_| |_| |_|
-        //   (_) (_) (_)
-        //
-        //   ToDo: cancel any waiting or blinking for this output as well
-
+        // Cancel any waiting or blinking for this output as well, setting the COMMAND field to 0 for that output
+				gDataArray[rcvOutput][0] = 0;
       break;
 
-      case 3: //blink a channel
-        gDataArray[gReceivedData[1]][1] = gReceivedData[2];
+      case 3:
+				/* -------------------------------------------------------------------------------------------------------------- */
+				/* MAKE A CHANNEL BLINK                                                                                           */
+				/* -------------------------------------------------------------------------------------------------------------- */
+				/* "Channel blink" uses 2 parameters:                                                                             */
+				/*    • rcvValue1 is the SPEED at which the output has to blink and can be "1" (250ms) or "2" (500ms)							*/
+				/*    • rcvValue2 is the ON TIME (in seconds) and is optional. This is the time the output will remain on, 				*/
+        /*      					in seconds. Then it will switch off automatically. If ON TIME is 0, it's ignored.        				*/
+				/*                                                                                                                */
+				/* In order to allow the loop() to maintain the blinking functions, gDataArray[] is loaded with the necessary			*/
+				/* data, so the blinking can be maintained over time, and/or switched off if necessary.														*/
+				/*                                                                                                                */
+				/* -------------------------------------------------------------------------------------------------------------- */
+
+				// Load the appropriate gDataArray row (the OUTPUT # in rcvOutput), which will be needed in the loop()
+				// to do the actual blinking.
+				gDataArray[rcvOutput][0] = rcvCommand;	// Store the COMMAND (3 = blink)
+        gDataArray[rcvOutput][1] = rcvValue1;		// Store the SPEED (1 or 2, 250ms or 500ms)
+				gDataArray[rcvOutput][2] = rcvValue2;		// Store the ON TIME (optional, in seconds)
+
+        //Check if there is timing to be done, if so, calculate and set the time in gTimeArray to switch the output off
+        if (rcvValue2 > 0) {gTimeArray[rcvOutput] = millis() + (rcvValue2 * 1000);}
       break;
 
-      case 4: //set a PWM value for a channel
+      case 4:
         /* -------------------------------------------------------------------------------------------------------------- */
         /* SWITCH A CHANNEL ON WITH A PWM VALUE                                                                           */
         /* -------------------------------------------------------------------------------------------------------------- */
         /* "PWM Channel on" gets 3 parameters:                                                                            */
-        /*    • gReceivedData[1] is the "output #" which can be: 3,5,6,9,10,11                                                 */
-        /*    • gReceivedData[2] is the "pwm value" from 0-255                                                                 */
-        /*    • gReceivedData[3] is the "on time" (in seconds) which is optional. This is the time the output will remain on,  */
+        /*    • gReceivedData[1] is the OUTPUT # which can be: 3,5,6,9,10,11                                              */
+        /*    • gReceivedData[2] is the PWM VALUE from 0-255                                                              */
+        /*    • gReceivedData[3] is the ON TIME (in seconds) and is optional. This is the time the output will remain on, */
         /*      in seconds. Then it will switch off automatically. If "on time" is 0, it's ignored.                       */
         /* -------------------------------------------------------------------------------------------------------------- */
 
         // Filter out all the non PWM outputs
-        if (gReceivedData[1] <  3) {break;}
-        if (gReceivedData[1] == 4) {break;}
-        if (gReceivedData[1] == 7) {break;}
-        if (gReceivedData[1] == 8) {break;}
-        if (gReceivedData[1] > 11) {break;}
+        if (rcvOutput <  3) {break;}
+        if (rcvOutput == 4) {break;}
+        if (rcvOutput == 7) {break;}
+        if (rcvOutput == 8) {break;}
+        if (rcvOutput > 11) {break;}
 
         // Set the output
         //Serial.println("PWM set.");
-        analogWrite(gReceivedData[1], gReceivedData[2]);
+        analogWrite(rcvOutput, rcvValue1);
 
         // Check if there is timing to be done, if so, calculate and set the time to switch the output off
-        if (gReceivedData[3] > 0) {gTimeArray[gReceivedData[1]] = millis() + (gReceivedData[3] * 1000);}
+        if (rcvValue2 > 0) {gTimeArray[rcvOutput] = millis() + (rcvValue2 * 1000);}
       break;
 
       case 5: //PWM sweep
         // Filter out all the non PWM outputs
-        if (gReceivedData[1] <  3) {break;}
-        if (gReceivedData[1] == 4) {break;}
-        if (gReceivedData[1] == 7) {break;}
-        if (gReceivedData[1] == 8) {break;}
-        if (gReceivedData[1] > 11) {break;}
+				if (rcvOutput <  3) {break;}
+        if (rcvOutput == 4) {break;}
+        if (rcvOutput == 7) {break;}
+        if (rcvOutput == 8) {break;}
+        if (rcvOutput > 11) {break;}
 
       break;
 
       case 6: //PWM sweep up
         // Filter out all the non PWM outputs
-        if (gReceivedData[1] <  3) {break;}
-        if (gReceivedData[1] == 4) {break;}
-        if (gReceivedData[1] == 7) {break;}
-        if (gReceivedData[1] == 8) {break;}
-        if (gReceivedData[1] > 11) {break;}
+				if (rcvOutput <  3) {break;}
+        if (rcvOutput == 4) {break;}
+        if (rcvOutput == 7) {break;}
+        if (rcvOutput == 8) {break;}
+        if (rcvOutput > 11) {break;}
 
       break;
 
       case 7: //PWM sweep down
         // Filter out all the non PWM outputs
-        if (gReceivedData[1] <  3) {break;}
-        if (gReceivedData[1] == 4) {break;}
-        if (gReceivedData[1] == 7) {break;}
-        if (gReceivedData[1] == 8) {break;}
-        if (gReceivedData[1] > 11) {break;}
+				if (rcvOutput <  3) {break;}
+        if (rcvOutput == 4) {break;}
+        if (rcvOutput == 7) {break;}
+        if (rcvOutput == 8) {break;}
+        if (rcvOutput > 11) {break;}
 
       break;
 
@@ -386,7 +452,7 @@ void loop() {
   /* Keep the blinking lines blinking...                                                                                  */
   /************************************************************************************************************************/
   updateBlinkingLines();
-  setBlinkingStates();
+  checkBlinkAndSweep();
 
   /************************************************************************************************************************/
   /* Check if timed stuff has to be done and some output has to be switched off                                           */
